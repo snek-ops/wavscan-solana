@@ -9,38 +9,7 @@ import {
   storageHintFromUri,
   type AnyScribeProof,
 } from "./anyscribe";
-
-const RPCS = [
-  "https://api.mainnet-beta.solana.com",
-  "https://solana-rpc.publicnode.com",
-];
-
-async function rpc<T>(method: string, params: unknown[]): Promise<T> {
-  let last: Error | null = null;
-  for (const url of RPCS) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-        signal: AbortSignal.timeout(12_000),
-      });
-      if (!res.ok) {
-        last = new Error(`RPC ${res.status}`);
-        continue;
-      }
-      const body = (await res.json()) as { result?: T; error?: { message?: string } };
-      if (body.error) {
-        last = new Error(body.error.message ?? "RPC error");
-        continue;
-      }
-      return body.result as T;
-    } catch (err) {
-      last = err instanceof Error ? err : new Error(String(err));
-    }
-  }
-  throw last ?? new Error("RPC failed");
-}
+import { rpc } from "./rpc.server";
 
 type Acc = {
   owner: string;
@@ -68,7 +37,10 @@ function hintsFromScan(uri: string | null, extras: Array<{ key: string; value: s
   for (const field of extras) {
     const hint = storageHintFromUri(field.value);
     if (hint) out.push(hint);
-    if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(field.value) && /inscrib|storage|scribe/i.test(field.key)) {
+    if (
+      /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(field.value) &&
+      /inscrib|storage|scribe/i.test(field.key)
+    ) {
       out.push(field.value);
     }
   }

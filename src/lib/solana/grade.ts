@@ -1,222 +1,315 @@
-import type { AudioHit, ExtraField, MediaHit, TokenScan } from "./types";
+import { parseDataJson, uriKind } from "./detect-audio.ts";
 
-export type FileGrade = "G0" | "G1" | "G2" | "G3" | "G4" | "G5";
+export type Grade = "G0" | "G1" | "G2" | "G3" | "G4" | "G5";
 
-export type LedgerArtifact = {
-  kind: "memo" | "ix" | "log";
-  prefix?: string;
-  signature: string;
-  mime?: string | null;
-  decodedBytes?: number | null;
-};
+export const GRADES: Grade[] = ["G0", "G1", "G2", "G3", "G4", "G5"];
 
-export type AnyScribeGradeInput = {
-  address: string;
-  header: { stateName: string; contentLength: number };
-  published: boolean;
-  mintBound: boolean;
-  ownerOk: boolean;
-  magicOk: boolean;
-  lengthOk: boolean;
-  poolBound: boolean;
-  configBound: boolean;
-  commitmentAlgorithm: string;
-  commitmentChecked: boolean;
-  commitmentOk: boolean | null;
-  gatewayUri: boolean;
-};
-
-export type GradeExtras = {
-  packedMint?: string | null;
-  artifacts?: LedgerArtifact[];
-  inscriptionProgram?: boolean;
-  chunkedWrites?: boolean;
-  anyscribe?: AnyScribeGradeInput | null;
-};
-
-function isAnyScribeProof(proof: AnyScribeGradeInput | null | undefined): proof is AnyScribeGradeInput {
-  return Boolean(
-    proof &&
-      proof.magicOk &&
-      proof.ownerOk &&
-      proof.published &&
-      proof.mintBound &&
-      proof.lengthOk &&
-      proof.commitmentOk !== false,
-  );
+export function isGrade(value: string | null | undefined): value is Grade {
+  return GRADES.includes(value as Grade);
 }
 
-export type GradeResult = {
-  grade: FileGrade;
-  label: string;
-  reasons: string[];
+/** Visual tone for the grade number. Dim = off-chain. Bright = inscribed. */
+export const GRADE_TONE: Record<
+  Grade,
+  "faint" | "muted" | "warn" | "accent" | "ok" | "fg"
+> = {
+  G0: "faint",
+  G1: "muted",
+  G2: "warn",
+  G3: "accent",
+  G4: "ok",
+  G5: "fg",
+};
+
+export type ScanFlags = {
+  txVersionCreate: number | string | null;
+  mutable: boolean;
   claimMismatch: boolean;
   packedMint: string | null;
 };
 
-export const GRADE_LABEL: Record<FileGrade, string> = {
-  G0: "off-chain file",
-  G1: "on-chain metadata, off-chain file",
-  G2: "ledger-packed artifact",
-  G3: "inscription on linked mint",
-  G4: "on-mint file",
-  G5: "fully on-chain file",
+export type GradeInfo = {
+  grade: Grade;
+  label: string;
+  walletImage: string;
+  inscribed: boolean;
+  explanation: string;
+};
+
+export const GRADE_META: Record<
+  Grade,
+  { label: string; walletImage: string; inscribed: boolean; short: string }
+> = {
+  G0: {
+    label: "Off-chain file",
+    walletImage: "Remote",
+    inscribed: false,
+    short: "No usable pointer and no packed bytes. Typical HTTP/IPFS/Arweave fetch.",
+  },
+  G1: {
+    label: "On-chain metadata, off-chain file",
+    walletImage: "Remote",
+    inscribed: false,
+    short: "Name, symbol, and uri sit on the mint. The uri is still HTTP, IPFS, or Arweave.",
+  },
+  G2: {
+    label: "Ledger-packed artifact",
+    walletImage: "No",
+    inscribed: false,
+    short: "Bytes in a memo or instruction of a confirmed tx, not copied into the mint.",
+  },
+  G3: {
+    label: "Inscription on linked mint",
+    walletImage: "Only if you follow the companion",
+    inscribed: false,
+    short: "This CA’s URI is HTTP/IPFS. A companion mint holds the packed data: file.",
+  },
+  G4: {
+    label: "On-mint file",
+    walletImage: "If the wallet decodes data:",
+    inscribed: true,
+    short: "This mint’s uri or additionalMetadata is a data: URI. Rent pays for a couple of KB.",
+  },
+  G5: {
+    label: "Fully on-chain file",
+    walletImage: "Gateway is a reader only",
+    inscribed: true,
+    short:
+      "AnyScribe program account (Fn7ASHW…) with ANYSCRIB header, published, mint-bound. HTTP is a gateway onto RPC dataSlice, not the store.",
+  },
 };
 
 const CLAIM_RE =
-  /inscrib|on[- ]chain (image|file|media|wav|gif|game)|in the coin|4k.?b game|4096|data:image/i;
+  /inscrib|on-?chain (image|file|photo|wav|audio|program|game|bytes)|in(side)? the coin|in a coin|4\s*k[b]? game|4096.byte|forever on-chain|bytes (are )?the program/i;
 
-const DATA_MEDIA_RE =
-  /^data:(image|audio|video|text\/html|text\/javascript|application\/javascript|application\/octet-stream)\b/i;
+const COMPANION_KEYS = new Set(["token", "ca", "pump", "packed"]);
 
-function dataHasPackedMedia(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("data:")) return false;
-  if (DATA_MEDIA_RE.test(trimmed)) return true;
-  if (!trimmed.startsWith("data:application/json")) return false;
-  return /data:(image|audio|video)\//i.test(trimmed);
+function isMintAddress(value: string): boolean {
+  const v = value.trim();
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v) && !/^[1-9A-HJ-NP-Za-km-z]{86,90}$/.test(v);
 }
 
-function extraPacked(fields: ExtraField[]): boolean {
-  return fields.some((field) => dataHasPackedMedia(field.value));
+const MINT_IN_TEXT_RE = /(?:^|[^1-9A-HJ-NP-Za-km-z])([1-9A-HJ-NP-Za-km-z]{32,44})(?![1-9A-HJ-NP-Za-km-z])/g;
+
+/** Pull standalone Solana addresses out of prose, not substrings of IPFS CIDs. */
+export function extractMintAddresses(text: string): string[] {
+  const out: string[] = [];
+  const re = new RegExp(MINT_IN_TEXT_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const value = match[1]!;
+    if (!isMintAddress(value) || out.includes(value)) continue;
+    out.push(value);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
-function onMintHit(hit: AudioHit | MediaHit | null): boolean {
-  return Boolean(hit && hit.storage === "on-chain" && hit.src.startsWith("data:"));
+export function looksLikeClaim(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return CLAIM_RE.test(text);
 }
 
-function claimHaystack(scan: Pick<TokenScan, "name" | "symbol" | "additionalMetadata" | "uri">): string {
-  const extras = scan.additionalMetadata.map((f) => `${f.key} ${f.value}`).join(" ");
-  return [scan.name ?? "", scan.symbol ?? "", extras].join(" ");
-}
-
-export function gradeScan(
-  scan: Pick<
-    TokenScan,
-    | "exists"
-    | "program"
-    | "name"
-    | "symbol"
-    | "uri"
-    | "uriKind"
-    | "additionalMetadata"
-    | "audio"
-    | "media"
-  >,
-  extras: GradeExtras = {},
-): GradeResult {
-  const reasons: string[] = [];
-  const packedMint = extras.packedMint?.trim() || null;
-  const artifacts = extras.artifacts ?? [];
-  const scribe = extras.anyscribe ?? null;
-
-  if (isAnyScribeProof(scribe)) {
-    reasons.push(
-      `AnyScribe storage ${scribe.address.slice(0, 4)}…${scribe.address.slice(-4)} is program-owned live state`,
-    );
-    reasons.push(
-      `ANYSCRIB magic, ${scribe.header.stateName}, mint-bound, ${scribe.header.contentLength} content bytes`,
-    );
-    if (scribe.poolBound) reasons.push("Header binds a Meteora pool");
-    if (scribe.configBound) reasons.push("Header binds a quote mint / config");
-    if (scribe.commitmentChecked && scribe.commitmentOk) {
-      reasons.push(`Verified ${scribe.commitmentAlgorithm} over account slices`);
-    } else {
-      reasons.push(`${scribe.commitmentAlgorithm} recorded on the header`);
+export function collectClaimText(
+  name: string | null,
+  extra: Array<{ key: string; value: string }>,
+  meta: unknown,
+): string {
+  const parts: string[] = [];
+  if (name) parts.push(name);
+  for (const f of extra) parts.push(`${f.key} ${f.value}`);
+  const walk = (value: unknown, depth: number) => {
+    if (depth > 4 || parts.length > 40) return;
+    if (typeof value === "string") {
+      if (value.length > 8 && value.length < 8_000) parts.push(value);
+      return;
     }
-    if (scribe.gatewayUri) {
-      reasons.push("HTTP metadata/content is a gateway onto those slices, not the store");
+    if (Array.isArray(value)) {
+      value.slice(0, 12).forEach((item) => walk(item, depth + 1));
+      return;
     }
-    return finish("G5", reasons, scan, packedMint);
-  }
-
-  if (extras.inscriptionProgram || extras.chunkedWrites) {
-    reasons.push(
-      extras.inscriptionProgram
-        ? "Inscription program account holds media bytes"
-        : "Media written across multiple realloc / write txs",
-    );
-    return finish("G5", reasons, scan, packedMint);
-  }
-
-  const uri = scan.uri?.trim() || "";
-  const uriPacked = dataHasPackedMedia(uri);
-  const extrasPacked = extraPacked(scan.additionalMetadata);
-  const audioPacked = onMintHit(scan.audio);
-  const imagePacked = onMintHit(scan.media);
-
-  if (uriPacked || extrasPacked || audioPacked || imagePacked) {
-    if (uriPacked) reasons.push("Mint URI is a data: payload with media bytes");
-    else if (uri.startsWith("data:application/json")) {
-      reasons.push("data:application/json on the mint embeds data: media");
+    if (value && typeof value === "object") {
+      for (const v of Object.values(value as Record<string, unknown>)) {
+        walk(v, depth + 1);
+      }
     }
-    if (extrasPacked) reasons.push("additionalMetadata holds a data: media blob");
-    if (audioPacked) reasons.push(`On-mint audio (${scan.audio?.mime ?? "audio"})`);
-    if (imagePacked) reasons.push(`On-mint image (${scan.media?.mime ?? "image"})`);
-    return finish("G4", reasons, scan, packedMint);
-  }
-
-  if (packedMint) {
-    reasons.push(`Packed file lives on companion mint ${packedMint}`);
-    if (scan.uriKind === "http" || /^https?:|^ipfs:|^ar:/i.test(uri)) {
-      reasons.push("This mint URI is HTTP/IPFS/Arweave");
-    }
-    return finish("G3", reasons, scan, packedMint);
-  }
-
-  if (artifacts.length > 0 && !uriPacked && !audioPacked && !imagePacked) {
-    const first = artifacts[0]!;
-    reasons.push(
-      `Ledger ${first.kind} in ${first.signature.slice(0, 8)}… is packed; not copied into this mint`,
-    );
-    if (scan.uriKind === "http" || /^https?:|^ipfs:|^ar:/i.test(uri)) {
-      reasons.push("Mint URI still points off-chain");
-    }
-    return finish("G2", reasons, scan, null);
-  }
-
-  const hasPointer =
-    Boolean(uri) ||
-    Boolean(scan.name) ||
-    Boolean(scan.symbol) ||
-    scan.program === "token-2022" ||
-    scan.program === "spl-token";
-
-  if (uri.startsWith("data:application/json") && !uriPacked) {
-    reasons.push("data: JSON wrapper on the mint, but nested files are HTTP/IPFS");
-    return finish("G1", reasons, scan, null);
-  }
-
-  if (hasPointer && (scan.uriKind === "http" || /^https?:|^ipfs:|^ar:/i.test(uri))) {
-    reasons.push("Name/symbol/URI live on-chain; file is fetched off-chain");
-    return finish("G1", reasons, scan, null);
-  }
-
-  if (hasPointer && !uri) {
-    reasons.push("On-chain token account, no metadata URI, no packed bytes");
-    return finish("G0", reasons, scan, null);
-  }
-
-  reasons.push("No on-chain file and no usable metadata pointer");
-  return finish("G0", reasons, scan, null);
-}
-
-function finish(
-  grade: FileGrade,
-  reasons: string[],
-  scan: Pick<TokenScan, "name" | "symbol" | "additionalMetadata" | "uri">,
-  packedMint: string | null,
-): GradeResult {
-  const claimed = CLAIM_RE.test(claimHaystack(scan));
-  const claimMismatch = claimed && (grade === "G0" || grade === "G1" || grade === "G2");
-  if (claimMismatch) {
-    reasons.push("Copy claims inscribed / on-chain file; bytes are not in live account state");
-  }
-  return {
-    grade,
-    label: GRADE_LABEL[grade],
-    reasons,
-    claimMismatch,
-    packedMint,
   };
+  walk(meta, 0);
+  return parts.join("\n");
+}
+
+function isDataMedia(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (!v.startsWith("data:")) return false;
+  if (v.startsWith("data:image/")) return true;
+  if (v.startsWith("data:audio/")) return true;
+  if (v.startsWith("data:video/")) return true;
+  if (v.startsWith("data:application/octet")) return true;
+  return false;
+}
+
+function jsonHoldsDataMedia(value: unknown, depth: number): boolean {
+  if (depth > 6) return false;
+  if (typeof value === "string") {
+    if (isDataMedia(value)) return true;
+    if (value.trimStart().startsWith("{") || value.trimStart().startsWith("[")) {
+      try {
+        return jsonHoldsDataMedia(JSON.parse(value), depth + 1);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => jsonHoldsDataMedia(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((v) =>
+      jsonHoldsDataMedia(v, depth + 1),
+    );
+  }
+  return false;
+}
+
+/** G4 needs a real media blob. A data:application/json of https links is G1. */
+export function hasOnMintFile(
+  uri: string | null,
+  extra: Array<{ key: string; value: string }>,
+): boolean {
+  const values = [uri ?? "", ...extra.map((f) => f.value)];
+  for (const raw of values) {
+    const v = raw.trim();
+    if (!v.startsWith("data:")) continue;
+    if (isDataMedia(v)) return true;
+    if (v.toLowerCase().startsWith("data:application/json") || v.startsWith("data:text/")) {
+      const parsed = parseDataJson(v);
+      if (jsonHoldsDataMedia(parsed ?? v, 0)) return true;
+    }
+  }
+  return false;
+}
+
+export function pointerMints(
+  extra: Array<{ key: string; value: string }>,
+  meta: unknown,
+  self: string,
+): string[] {
+  const out: string[] = [];
+  const add = (value: string) => {
+    const v = value.trim();
+    if (!isMintAddress(v) || v === self) return;
+    if (!out.includes(v)) out.push(v);
+  };
+  for (const f of extra) {
+    if (COMPANION_KEYS.has(f.key.toLowerCase().replace(/[\s_-]/g, ""))) add(f.value);
+  }
+  if (meta && typeof meta === "object") {
+    for (const [k, v] of Object.entries(meta as Record<string, unknown>)) {
+      if (typeof v === "string" && COMPANION_KEYS.has(k.toLowerCase())) add(v);
+    }
+  }
+  return out;
+}
+
+export function linkedMintCandidates(
+  extra: Array<{ key: string; value: string }>,
+  meta: unknown,
+  texts: string[],
+  self: string,
+): string[] {
+  const out: string[] = [];
+  const add = (value: string) => {
+    for (const mint of extractMintAddresses(value)) {
+      if (mint === self || out.includes(mint)) continue;
+      out.push(mint);
+    }
+  };
+  for (const field of extra) add(field.value);
+  for (const text of texts) add(text);
+  if (meta && typeof meta === "object") {
+    for (const value of Object.values(meta as Record<string, unknown>)) {
+      if (typeof value === "string") add(value);
+    }
+  }
+  return out.slice(0, 5);
+}
+
+export function companionSeed(mint: string): string {
+  return (`img:${mint}`).slice(0, 32);
+}
+
+export function decidePrimaryGrade(input: {
+  exists: boolean;
+  uri: string | null;
+  onMintFile: boolean;
+  packedHasFile: boolean;
+  game: boolean;
+  onlyTx: boolean;
+  anyscribe?: boolean;
+}): Grade {
+  if (input.anyscribe) return "G5";
+  if (input.onlyTx && input.game) return "G2";
+  if (input.onMintFile) return "G4";
+  if (input.packedHasFile) return "G3";
+  if (!input.exists) return "G0";
+  const kind = uriKind(input.uri);
+  if (kind === "http") return "G1";
+  if (kind === "data" && !input.onMintFile) return "G1";
+  if (input.game) return "G2";
+  if (kind === "other") return "G0";
+  return "G0";
+}
+
+export function buildExplanation(input: {
+  grade: Grade;
+  name: string | null;
+  mediaMime: string | null;
+  mediaBytes: number | null;
+  hasGame: boolean;
+  anyscribeBytes?: number | null;
+}): string {
+  const name = input.name ?? "This mint";
+  const blob = blobPhrase(input.mediaMime, input.mediaBytes);
+  if (input.grade === "G5") {
+    const size =
+      input.anyscribeBytes != null ? ` ${input.anyscribeBytes} content bytes.` : "";
+    return `${name} is G5. File lives in an AnyScribe program account, not a 4 KB v1 pack. The HTTP URI is a gateway onto those slices.${size}`;
+  }
+  if (input.grade === "G4") {
+    return `${name} is G4. The file is in this mint: ${blob}.`;
+  }
+  if (input.grade === "G3") {
+    return `${name} is G3. This mint only has a URL. The file is on a linked mint.`;
+  }
+  if (input.grade === "G2") {
+    return `${name} is G2. The bytes live in a transaction, not in this mint.`;
+  }
+  if (input.grade === "G1" && input.hasGame) {
+    return `${name} is G1. The file is a URL. A cart in a memo is G2 — still not in the mint.`;
+  }
+  if (input.grade === "G1") {
+    return `${name} is G1. Name and URI are on-chain. The file is still a URL.`;
+  }
+  return `${name} is G0. Off-chain. No file in this account.`;
+}
+
+function blobPhrase(mime: string | null, bytes: number | null): string {
+  if (!mime && bytes == null) return "a data URI with real media";
+  if (mime && bytes != null) return `${mime} (${bytes} bytes)`;
+  if (mime) return mime;
+  return `${bytes} bytes`;
+}
+
+export function gradeClaimMismatch(
+  grade: Grade,
+  hasGame: boolean,
+  claim: boolean,
+): boolean {
+  if (!claim) return false;
+  if (grade === "G4" || grade === "G5") return false;
+  if (hasGame && (grade === "G1" || grade === "G2" || grade === "G0" || grade === "G3")) {
+    return true;
+  }
+  return grade === "G0" || grade === "G1" || grade === "G2" || grade === "G3";
 }

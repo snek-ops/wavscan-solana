@@ -1,4 +1,4 @@
-/** Solana transaction v1 (SIMD larger txs): 0x81 prefix, 4096-byte envelope. */
+/** Solana transaction v1 (SIMD-0385): 0x81 prefix, 4096-byte envelope. */
 
 export const V1_PREFIX = 0x81;
 export const V1_MAX_BYTES = 4096;
@@ -83,7 +83,6 @@ export function parseV1Transaction(bytes: Uint8Array): V1Transaction {
     heapSize: null,
   };
 
-  // Bits 0–1 together are a u64 total priority fee.
   if ((mask & 0x03) !== 0) {
     if (offset + 8 > bytes.length) throw new Error("v1 truncated priority fee");
     const lo = u32(bytes, offset);
