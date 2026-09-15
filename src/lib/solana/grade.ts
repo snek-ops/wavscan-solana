@@ -10,12 +10,41 @@ export type LedgerArtifact = {
   decodedBytes?: number | null;
 };
 
+export type AnyScribeGradeInput = {
+  address: string;
+  header: { stateName: string; contentLength: number };
+  published: boolean;
+  mintBound: boolean;
+  ownerOk: boolean;
+  magicOk: boolean;
+  lengthOk: boolean;
+  poolBound: boolean;
+  configBound: boolean;
+  commitmentAlgorithm: string;
+  commitmentChecked: boolean;
+  commitmentOk: boolean | null;
+  gatewayUri: boolean;
+};
+
 export type GradeExtras = {
   packedMint?: string | null;
   artifacts?: LedgerArtifact[];
   inscriptionProgram?: boolean;
   chunkedWrites?: boolean;
+  anyscribe?: AnyScribeGradeInput | null;
 };
+
+function isAnyScribeProof(proof: AnyScribeGradeInput | null | undefined): proof is AnyScribeGradeInput {
+  return Boolean(
+    proof &&
+      proof.magicOk &&
+      proof.ownerOk &&
+      proof.published &&
+      proof.mintBound &&
+      proof.lengthOk &&
+      proof.commitmentOk !== false,
+  );
+}
 
 export type GradeResult = {
   grade: FileGrade;
@@ -79,6 +108,27 @@ export function gradeScan(
   const reasons: string[] = [];
   const packedMint = extras.packedMint?.trim() || null;
   const artifacts = extras.artifacts ?? [];
+  const scribe = extras.anyscribe ?? null;
+
+  if (isAnyScribeProof(scribe)) {
+    reasons.push(
+      `AnyScribe storage ${scribe.address.slice(0, 4)}…${scribe.address.slice(-4)} is program-owned live state`,
+    );
+    reasons.push(
+      `ANYSCRIB magic, ${scribe.header.stateName}, mint-bound, ${scribe.header.contentLength} content bytes`,
+    );
+    if (scribe.poolBound) reasons.push("Header binds a Meteora pool");
+    if (scribe.configBound) reasons.push("Header binds a quote mint / config");
+    if (scribe.commitmentChecked && scribe.commitmentOk) {
+      reasons.push(`Verified ${scribe.commitmentAlgorithm} over account slices`);
+    } else {
+      reasons.push(`${scribe.commitmentAlgorithm} recorded on the header`);
+    }
+    if (scribe.gatewayUri) {
+      reasons.push("HTTP metadata/content is a gateway onto those slices, not the store");
+    }
+    return finish("G5", reasons, scan, packedMint);
+  }
 
   if (extras.inscriptionProgram || extras.chunkedWrites) {
     reasons.push(
@@ -159,7 +209,9 @@ function finish(
 ): GradeResult {
   const claimed = CLAIM_RE.test(claimHaystack(scan));
   const claimMismatch = claimed && (grade === "G0" || grade === "G1" || grade === "G2");
-  if (claimMismatch) reasons.push("Copy claims inscribed / on-chain file; bytes are not on this mint");
+  if (claimMismatch) {
+    reasons.push("Copy claims inscribed / on-chain file; bytes are not in live account state");
+  }
   return {
     grade,
     label: GRADE_LABEL[grade],
