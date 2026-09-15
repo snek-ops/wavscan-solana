@@ -1,6 +1,6 @@
-# wavscan
+# Metadata Scanner
 
-Paste a Solana mint. wavscan reads Token-2022 `tokenMetadata` (and Metaplex if that is all the mint has) and tells you whether the **file** is on the mint, in a linked program account, only pointed at, or not there.
+Paste a Solana contract. The scanner says whether it is a token, an NFT, a wallet, or nothing on-chain — then whether the **file** lives on the mint, in a linked program account, only pointed at, or not there.
 
 Live rule: **v1 is a transaction format. Inscribed means media bytes in live account state.**
 

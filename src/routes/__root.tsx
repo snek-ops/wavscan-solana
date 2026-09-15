@@ -3,7 +3,7 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "WAVSCAN";
+const APP_NAME = "Metadata Scanner";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -13,7 +13,7 @@ export const Route = createRootRoute({
       { title: APP_NAME },
       {
         name: "description",
-        content: "Check if a Solana token carries on-chain audio.",
+        content: "Paste a Solana contract. See if the file is on-chain, linked, or only a URL.",
       },
       { name: "theme-color", content: "#090a0b" },
     ],
