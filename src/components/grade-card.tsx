@@ -7,10 +7,8 @@ import { cn } from "@/lib/utils";
 
 export function GradeCard({
   scan,
-  onOpenPacked,
 }: {
   scan: TokenScan;
-  onOpenPacked?: (mint: string) => void;
 }) {
   if (!scan.grade) return null;
   const meta = GRADE_META[scan.grade];
@@ -102,18 +100,6 @@ export function GradeCard({
           <p className="break-all font-mono text-xs text-fg">
             {scan.grade === "G3" ? "packed" : "linked"} {flags.packedMint}
           </p>
-          {onOpenPacked ? (
-            <div>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() => onOpenPacked(flags.packedMint!)}
-              >
-                Scan linked mint
-              </Button>
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>

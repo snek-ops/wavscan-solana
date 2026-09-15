@@ -27,8 +27,10 @@ import {
   collectClaimText,
   companionSeed,
   decidePrimaryGrade,
+  explicitLinkMints,
   gradeClaimMismatch,
   hasOnMintFile,
+  isDexNoise,
   linkedMintCandidates,
   looksLikeClaim,
   pointerMints,
@@ -690,6 +692,7 @@ function classifyAccount(account: RpcAccount | null): {
 
 function tokenMetaFromAccount(account: RpcAccount): {
   name: string | null;
+  symbol: string | null;
   uri: string | null;
   extra: ExtraField[];
 } {
@@ -701,12 +704,21 @@ function tokenMetaFromAccount(account: RpcAccount): {
     if (ext.extension === "tokenMetadata" && ext.state) {
       return {
         name: typeof ext.state.name === "string" ? ext.state.name : null,
+        symbol: typeof ext.state.symbol === "string" ? ext.state.symbol : null,
         uri: typeof ext.state.uri === "string" ? ext.state.uri : null,
         extra: extraFromPairs(ext.state.additionalMetadata),
       };
     }
   }
-  return { name: null, uri: null, extra: [] };
+  return { name: null, symbol: null, uri: null, extra: [] };
+}
+
+function pubkeyField(value: unknown): string | null {
+  if (typeof value === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) {
+    if (value === "None") return null;
+    return value;
+  }
+  return null;
 }
 
 function linkHint(
@@ -746,13 +758,37 @@ function roleForLink(
   if (kind === "token") return "token";
   if (kind === "nft" && hasFile) return "sidecar-nft";
   if (kind === "nft") return "nft";
-  if (kind === "none" || kind === "wallet" || kind === "program") return null;
-  return "other";
+  return null;
+}
+
+async function contentsFromUri(uri: string | null): Promise<{
+  media: MediaHit | null;
+  audio: AudioHit | null;
+  image: string | null;
+}> {
+  if (!uri) return { media: null, audio: null, image: null };
+  let json: unknown = null;
+  const onMint = uri.startsWith("data:");
+  if (onMint) {
+    json = parseDataJson(uri);
+  } else if (/^(https?:|ipfs:|ar:)/i.test(uri)) {
+    json = await withTimeout(fetchJson(uri), 2_000, null);
+  }
+  const extraAudio = onMint ? audioHitsFromRawUtf8(uri) : [];
+  const extraImage = onMint ? hitsFromImageRaw(uri) : [];
+  const audio = findAudioHits(json, extraAudio)[0] ?? null;
+  const media = findImageHits(json, extraImage)[0] ?? null;
+  return {
+    media,
+    audio,
+    image: media?.src ?? pickImage(json),
+  };
 }
 
 async function peekLinkedMint(
   address: string,
   packedMint: string | null,
+  explicit: Set<string>,
 ): Promise<LinkedMint | null> {
   try {
     const parsed = await rpc<{ value: RpcAccount | null }>("getAccountInfo", [
@@ -760,17 +796,81 @@ async function peekLinkedMint(
       { encoding: "jsonParsed" },
     ]);
     if (!parsed?.value) return null;
-    const classified = classifyAccount(parsed.value);
-    const meta = tokenMetaFromAccount(parsed.value);
+    const account = parsed.value;
+    const classified = classifyAccount(account);
+    if (
+      classified.kind === "none" ||
+      classified.kind === "wallet" ||
+      classified.kind === "program" ||
+      classified.kind === "token-account" ||
+      classified.kind === "other"
+    ) {
+      return null;
+    }
+    const info = parsedInfo(account.data)?.info;
+    let meta = tokenMetaFromAccount(account);
+    if (
+      isDexNoise({
+        owner: account.owner,
+        name: meta.name,
+        symbol: meta.symbol,
+        mintAuthority: pubkeyField(info?.mintAuthority),
+        freezeAuthority: pubkeyField(info?.freezeAuthority),
+      })
+    ) {
+      return null;
+    }
+    if (!meta.uri && (classified.kind === "nft" || classified.kind === "token")) {
+      try {
+        const pda = metaplexPda(address);
+        const metaAcc = await rpc<{
+          value: { data: [string, string] } | null;
+        }>("getAccountInfo", [pda, { encoding: "base64" }]);
+        if (metaAcc?.value?.data?.[0]) {
+          const parsedMeta = parseMetaplex(metaAcc.value.data[0]);
+          if (parsedMeta) {
+            meta = {
+              name: meta.name ?? parsedMeta.name,
+              symbol: meta.symbol ?? parsedMeta.symbol,
+              uri: parsedMeta.uri,
+              extra: meta.extra,
+            };
+          }
+        }
+      } catch {
+        /* no metaplex account */
+      }
+    }
+    if (
+      isDexNoise({
+        owner: account.owner,
+        name: meta.name,
+        symbol: meta.symbol,
+        mintAuthority: pubkeyField(info?.mintAuthority),
+        freezeAuthority: pubkeyField(info?.freezeAuthority),
+      })
+    ) {
+      return null;
+    }
     const hasFile = hasOnMintFile(meta.uri, meta.extra);
     const role = roleForLink(classified.kind, hasFile, packedMint, address);
     if (!role) return null;
+    if (role === "token" && !explicit.has(address) && packedMint !== address) {
+      return null;
+    }
+    const loadContents = role !== "token";
+    const contents = loadContents
+      ? await contentsFromUri(meta.uri)
+      : { media: null, audio: null, image: null };
     return {
       address,
       role,
       name: meta.name,
       hint: linkHint(role, meta.uri, meta.extra),
       hasOnMintFile: hasFile,
+      image: contents.image,
+      media: contents.media,
+      audio: contents.audio,
     };
   } catch {
     return null;
@@ -780,6 +880,7 @@ async function peekLinkedMint(
 async function peekLinkedMints(
   addresses: string[],
   packedMint: string | null,
+  explicit: Set<string>,
 ): Promise<LinkedMint[]> {
   const uniq: string[] = [];
   for (const address of addresses) {
@@ -787,7 +888,7 @@ async function peekLinkedMints(
     if (uniq.length >= 4) break;
   }
   const rows = await Promise.all(
-    uniq.map((address) => peekLinkedMint(address, packedMint)),
+    uniq.map((address) => peekLinkedMint(address, packedMint, explicit)),
   );
   const rank: Record<LinkedRole, number> = {
     "sidecar-nft": 0,
@@ -1165,7 +1266,12 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
 
   const pump = pumpP ? await pumpP : null;
   const linkPacked = packedMint && (onMintFile || packedHasFile) ? packedMint : null;
+  const explicit = new Set(
+    explicitLinkMints(additionalMetadata, metaJson, mint),
+  );
+  if (linkPacked) explicit.add(linkPacked);
   const linkCandidates = [
+    ...explicit,
     ...linkedMintCandidates(
       additionalMetadata,
       metaJson,
@@ -1175,12 +1281,15 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
       ],
       mint,
     ),
-    ...(linkPacked ? [linkPacked] : []),
     ...(derivedPacked ? [derivedPacked] : []),
   ];
   const links =
     hop === 0
-      ? await withTimeout(peekLinkedMints(linkCandidates, linkPacked), 4_000, [])
+      ? await withTimeout(
+          peekLinkedMints(linkCandidates, linkPacked, explicit),
+          4_000,
+          [],
+        )
       : [];
 
   const scan: TokenScan = {

@@ -4,11 +4,14 @@ import {
   buildExplanation,
   companionSeed,
   decidePrimaryGrade,
+  explicitLinkMints,
   extractMintAddresses,
   gradeClaimMismatch,
   hasOnMintFile,
+  isDexNoise,
   linkedMintCandidates,
   looksLikeClaim,
+  looksLikeLpName,
 } from "./grade.ts";
 
 test("G4 requires a real data: media blob", () => {
@@ -162,6 +165,17 @@ test("extract mint addresses from prose, not IPFS CIDs", () => {
   assert.equal(extractMintAddresses(cid).length, 0);
 });
 
+test("image and pool URLs do not count as sidecar mints", () => {
+  const image =
+    "https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/3jt62QcVQvTu2gCCYFWPBnVNgQ2uv5fVxkSa9hFepump.webp";
+  assert.deepEqual(extractMintAddresses(image), []);
+  const explorer =
+    "see https://solscan.io/token/Bepk57mCZnVYPuE9qUVqFTxScq2yX6gLMjVMWmzS5FUn";
+  assert.deepEqual(extractMintAddresses(explorer), [
+    "Bepk57mCZnVYPuE9qUVqFTxScq2yX6gLMjVMWmzS5FUn",
+  ]);
+});
+
 test("linked candidates include extra coin field and description mint", () => {
   const self = "6tRotGypA5QJKwmfgGFe4yp36eNQ4Vz7m8MNNpBnpYmq";
   const nft = "Bepk57mCZnVYPuE9qUVqFTxScq2yX6gLMjVMWmzS5FUn";
@@ -179,4 +193,71 @@ test("linked candidates include extra coin field and description mint", () => {
     self,
   );
   assert.deepEqual(fromDesc, [nft]);
+  const fromImage = linkedMintCandidates(
+    [],
+    {
+      image:
+        "https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/3jt62QcVQvTu2gCCYFWPBnVNgQ2uv5fVxkSa9hFepump.webp",
+    },
+    [],
+    "4MMQY9bwkxxTtsK3W227Q5ABT6yFY8Pmn9Ze7wmAXKY8",
+  );
+  assert.deepEqual(fromImage, []);
+});
+
+test("explicit links are extra fields that are a mint, not URL scrapes", () => {
+  const self = "Bepk57mCZnVYPuE9qUVqFTxScq2yX6gLMjVMWmzS5FUn";
+  const token = "6tRotGypA5QJKwmfgGFe4yp36eNQ4Vz7m8MNNpBnpYmq";
+  assert.deepEqual(
+    explicitLinkMints([{ key: "coin", value: token }], {}, self),
+    [token],
+  );
+  assert.deepEqual(
+    explicitLinkMints(
+      [],
+      {
+        image:
+          "https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/3jt62QcVQvTu2gCCYFWPBnVNgQ2uv5fVxkSa9hFepump.webp",
+      },
+      "4MMQY9bwkxxTtsK3W227Q5ABT6yFY8Pmn9Ze7wmAXKY8",
+    ),
+    [],
+  );
+});
+
+test("Raydium LP names and AMM authorities are liquidity noise", () => {
+  assert.equal(looksLikeLpName("Raydium ALLINU-SOL", "ALLINU-SOL"), true);
+  assert.equal(looksLikeLpName("Raydium LP Token", "LP"), true);
+  assert.equal(looksLikeLpName("bruh", "bruh"), false);
+  assert.equal(looksLikeLpName("ALLINU", "ALLINU"), false);
+  assert.equal(
+    isDexNoise({
+      owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      name: "bruh",
+      symbol: "bruh",
+      mintAuthority: null,
+      freezeAuthority: "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+    }),
+    true,
+  );
+  assert.equal(
+    isDexNoise({
+      owner: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+      name: null,
+      symbol: null,
+      mintAuthority: null,
+      freezeAuthority: null,
+    }),
+    true,
+  );
+  assert.equal(
+    isDexNoise({
+      owner: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      name: "bruh",
+      symbol: "bruh",
+      mintAuthority: null,
+      freezeAuthority: null,
+    }),
+    false,
+  );
 });

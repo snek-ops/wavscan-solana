@@ -94,17 +94,17 @@ export type LinkedMint = {
   name: string | null;
   hint: string;
   hasOnMintFile: boolean;
+  image: string | null;
+  media: MediaHit | null;
+  audio: AudioHit | null;
 };
 
-export const LINK_ROLE_META: Record<
-  LinkedRole,
-  { label: string; scan: string }
-> = {
-  "sidecar-nft": { label: "Sidecar NFT", scan: "Scan NFT" },
-  "packed-mint": { label: "Packed mint", scan: "Scan packed mint" },
-  token: { label: "Token contract", scan: "Scan token" },
-  nft: { label: "Linked NFT", scan: "Scan NFT" },
-  other: { label: "Linked account", scan: "Scan" },
+export const LINK_ROLE_META: Record<LinkedRole, { label: string }> = {
+  "sidecar-nft": { label: "Sidecar NFT" },
+  "packed-mint": { label: "Packed mint" },
+  token: { label: "Token contract" },
+  nft: { label: "Linked NFT" },
+  other: { label: "Linked account" },
 };
 
 export type AnyScribeHit = {

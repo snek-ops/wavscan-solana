@@ -60,6 +60,7 @@ The app has a neighbor tab next to Grades with Solscan steps. Short version:
 - Metaplex metadata PDA for classic SPL / Token-2022 without an on-mint URI
 - `data:` audio and images on the mint URI or `additionalMetadata`
 - Companion packed mints (G3) and ONEPAGE memo carts (G2)
+- Sidecar NFTs (inline image/audio, copyable address; Raydium LP / pool accounts are ignored)
 - AnyScribe program-owned storage via RPC slices
 - v1 transaction decode (`0x81`, tail signatures, `transactionConfig`)
 
@@ -96,7 +97,8 @@ src/components/grade-legend.tsx    Grades / Don't trust, verify tabs
 
 | Token | Expected |
 | --- | --- |
-| bruh (`Bepk57…`) | G4 — `data:application/json` with SVG + WAV inside |
+| bruh pump (`6tRot…`) | G1 — HTTP/IPFS file on the token. Sidecar NFT `Bepk57…` holds the on-mint SVG + WAV (shown inline, not a rescan) |
+| bruh NFT (`Bepk57…`) | G4 — `data:application/json` with SVG + WAV inside |
 | DVD4q | G4 — on-mint JPEG |
 | HUHCAT pump (`A9AHY…`) | G3 — file on the packed companion |
 | onepage.surf / ONEPAGE tx | G2 cart in a memo |

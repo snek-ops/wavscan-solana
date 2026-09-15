@@ -412,12 +412,9 @@ export function Checker() {
               </div>
             </div>
 
-            <LinkedOnchain
-              links={scan.links}
-              onScan={(mint) => void runScan(mint)}
-            />
+            <LinkedOnchain links={scan.links} />
 
-            <GradeCard scan={scan} onOpenPacked={(mint) => void runScan(mint)} />
+            <GradeCard scan={scan} />
 
             {scan.game ? <GamePlayer game={scan.game} /> : null}
 
