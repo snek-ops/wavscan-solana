@@ -6,7 +6,20 @@ import {
   uriKind,
   dataUriMime,
 } from "./detect-audio";
-import { EMPTY_SCAN, type AudioHit, type ExtraField, type TokenScan } from "./types";
+import {
+  findImageHits,
+  hitsFromImageRaw,
+  isGifMime,
+  looksLikeImage,
+} from "./detect-image";
+import { ipfsCandidates, ipfsDisplayUrl } from "./ipfs";
+import {
+  EMPTY_SCAN,
+  type AudioHit,
+  type ExtraField,
+  type MediaHit,
+  type TokenScan,
+} from "./types";
 
 const RPCS = [
   "https://api.mainnet-beta.solana.com",
@@ -97,37 +110,38 @@ function parseMetaplex(dataBase64: string): {
 }
 
 function rewriteGateway(url: string): string {
-  if (url.startsWith("ipfs://")) {
-    return `https://ipfs.io/ipfs/${url.slice("ipfs://".length)}`;
-  }
+  if (url.startsWith("ipfs://")) return ipfsDisplayUrl(url);
   if (url.startsWith("ar://")) {
     return `https://arweave.net/${url.slice("ar://".length)}`;
   }
-  return url;
+  return ipfsDisplayUrl(url);
 }
 
 async function fetchJson(uri: string): Promise<unknown | null> {
-  const url = rewriteGateway(uri);
-  if (!url.startsWith("http://") && !url.startsWith("https://")) return null;
-  try {
-    const res = await fetch(url, {
-      headers: { accept: "application/json, text/plain, */*" },
-      signal: AbortSignal.timeout(10_000),
-      redirect: "follow",
-    });
-    if (!res.ok) return null;
-    const len = Number(res.headers.get("content-length") ?? "0");
-    if (len > 2_000_000) return null;
-    const text = await res.text();
-    if (text.length > 2_000_000) return null;
+  const urls = ipfsCandidates(rewriteGateway(uri));
+  for (const url of urls) {
+    if (!url.startsWith("http://") && !url.startsWith("https://")) continue;
     try {
-      return JSON.parse(text);
+      const res = await fetch(url, {
+        headers: { accept: "application/json, text/plain, */*" },
+        signal: AbortSignal.timeout(10_000),
+        redirect: "follow",
+      });
+      if (!res.ok) continue;
+      const len = Number(res.headers.get("content-length") ?? "0");
+      if (len > 2_000_000) continue;
+      const text = await res.text();
+      if (text.length > 2_000_000) continue;
+      try {
+        return JSON.parse(text);
+      } catch {
+        continue;
+      }
     } catch {
-      return null;
+      continue;
     }
-  } catch {
-    return null;
   }
+  return null;
 }
 
 function extraFromPairs(pairs: unknown): ExtraField[] {
@@ -144,7 +158,7 @@ function extraFromPairs(pairs: unknown): ExtraField[] {
   return out;
 }
 
-function hitsFromPairs(pairs: unknown): AudioHit[] {
+function audioHitsFromPairs(pairs: unknown): AudioHit[] {
   if (!Array.isArray(pairs)) return [];
   const hits: AudioHit[] = [];
   for (const pair of pairs) {
@@ -167,7 +181,32 @@ function hitsFromPairs(pairs: unknown): AudioHit[] {
   return hits;
 }
 
-function hitsFromRawUtf8(raw: string): AudioHit[] {
+function imageHitsFromPairs(pairs: unknown): MediaHit[] {
+  if (!Array.isArray(pairs)) return [];
+  const hits: MediaHit[] = [];
+  for (const pair of pairs) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const key = String(pair[0] ?? "");
+    const value = String(pair[1] ?? "");
+    const match = looksLikeImage(value, key);
+    if (match) {
+      hits.push({
+        field: `additionalMetadata.${key}`,
+        src: value.startsWith("data:") ? value.trim() : ipfsDisplayUrl(value.trim()),
+        mime: match.mime,
+        kind: match.kind,
+        animated: match.kind === "gif",
+        storage: value.startsWith("data:") ? "on-chain" : "off-chain",
+        bytes: value.startsWith("data:")
+          ? Math.max(0, Math.floor(((value.split(",")[1] ?? "").length * 3) / 4))
+          : null,
+      });
+    }
+  }
+  return hits;
+}
+
+function audioHitsFromRawUtf8(raw: string): AudioHit[] {
   const hits: AudioHit[] = [];
   const marker = "data:audio/";
   let from = 0;
@@ -214,10 +253,95 @@ function pickSymbol(meta: unknown, fallback: string | null): string | null {
 function pickImage(meta: unknown): string | null {
   if (!meta || typeof meta !== "object") return null;
   const rec = meta as Record<string, unknown>;
-  for (const key of ["image", "image_url", "icon"]) {
-    if (typeof rec[key] === "string" && rec[key]) return rec[key] as string;
+  for (const key of ["image", "image_url", "icon", "animation_url"]) {
+    if (typeof rec[key] === "string" && rec[key]) {
+      return ipfsDisplayUrl(rec[key] as string);
+    }
   }
   return null;
+}
+
+function gifMagic(bytes: Uint8Array): boolean {
+  if (bytes.length < 6) return false;
+  const tag = String.fromCharCode(
+    bytes[0]!,
+    bytes[1]!,
+    bytes[2]!,
+    bytes[3]!,
+    bytes[4]!,
+    bytes[5]!,
+  );
+  return tag === "GIF87a" || tag === "GIF89a";
+}
+
+async function sniffRemote(hit: MediaHit): Promise<MediaHit> {
+  if (hit.src.startsWith("data:")) return hit;
+  const urls = ipfsCandidates(hit.src);
+  for (const url of urls) {
+    try {
+      const head = await fetch(url, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(8_000),
+        redirect: "follow",
+      });
+      if (head.ok) {
+        const mime = (head.headers.get("content-type") ?? hit.mime)
+          .split(";")[0]
+          ?.trim()
+          .toLowerCase() || hit.mime;
+        const len = head.headers.get("content-length");
+        const bytes = len && /^\d+$/.test(len) ? Number(len) : hit.bytes;
+        const gif = isGifMime(mime) || hit.kind === "gif";
+        if (mime.startsWith("image/") || gif) {
+          return {
+            ...hit,
+            src: url,
+            mime: gif ? "image/gif" : mime,
+            kind: gif ? "gif" : "image",
+            animated: gif,
+            bytes,
+          };
+        }
+      }
+    } catch {
+      /* try GET range */
+    }
+    try {
+      const res = await fetch(url, {
+        headers: { Range: "bytes=0-15", accept: "image/*,*/*" },
+        signal: AbortSignal.timeout(8_000),
+        redirect: "follow",
+      });
+      if (!res.ok && res.status !== 206) continue;
+      const mime = (res.headers.get("content-type") ?? hit.mime)
+        .split(";")[0]
+        ?.trim()
+        .toLowerCase() || hit.mime;
+      const lenHeader = res.headers.get("content-length");
+      let bytes = hit.bytes;
+      if (lenHeader && /^\d+$/.test(lenHeader) && Number(lenHeader) > 64) {
+        bytes = Number(lenHeader);
+      }
+      const range = res.headers.get("content-range");
+      if (range) {
+        const total = range.split("/")[1];
+        if (total && total !== "*" && /^\d+$/.test(total)) bytes = Number(total);
+      }
+      const buf = new Uint8Array(await res.arrayBuffer());
+      const gif = isGifMime(mime) || gifMagic(buf) || hit.kind === "gif";
+      return {
+        ...hit,
+        src: url,
+        mime: gif ? "image/gif" : mime || hit.mime,
+        kind: gif ? "gif" : "image",
+        animated: gif,
+        bytes,
+      };
+    } catch {
+      continue;
+    }
+  }
+  return { ...hit, src: ipfsDisplayUrl(hit.src) };
 }
 
 export async function inspectMint(rawMint: string): Promise<TokenScan> {
@@ -267,7 +391,8 @@ export async function inspectMint(rawMint: string): Promise<TokenScan> {
   let symbol: string | null = null;
   let uri: string | null = null;
   let additionalMetadata: ExtraField[] = [];
-  const extraHits: AudioHit[] = [];
+  const extraAudio: AudioHit[] = [];
+  const extraImage: MediaHit[] = [];
 
   const parsedData = account.data as
     | {
@@ -291,7 +416,8 @@ export async function inspectMint(rawMint: string): Promise<TokenScan> {
         symbol = typeof ext.state.symbol === "string" ? ext.state.symbol : symbol;
         uri = typeof ext.state.uri === "string" ? ext.state.uri : uri;
         additionalMetadata = extraFromPairs(ext.state.additionalMetadata);
-        extraHits.push(...hitsFromPairs(ext.state.additionalMetadata));
+        extraAudio.push(...audioHitsFromPairs(ext.state.additionalMetadata));
+        extraImage.push(...imageHitsFromPairs(ext.state.additionalMetadata));
       }
     }
     if (!uri) {
@@ -324,7 +450,8 @@ export async function inspectMint(rawMint: string): Promise<TokenScan> {
                     typeof e.state.symbol === "string" ? e.state.symbol : symbol;
                   uri = typeof e.state.uri === "string" ? e.state.uri : uri;
                   additionalMetadata = extraFromPairs(e.state.additionalMetadata);
-                  extraHits.push(...hitsFromPairs(e.state.additionalMetadata));
+                  extraAudio.push(...audioHitsFromPairs(e.state.additionalMetadata));
+                  extraImage.push(...imageHitsFromPairs(e.state.additionalMetadata));
                 }
               }
             } catch {
@@ -359,7 +486,8 @@ export async function inspectMint(rawMint: string): Promise<TokenScan> {
   if (uri) {
     if (uri.startsWith("data:")) {
       metaJson = parseDataJson(uri);
-      extraHits.push(...hitsFromRawUtf8(uri));
+      extraAudio.push(...audioHitsFromRawUtf8(uri));
+      extraImage.push(...hitsFromImageRaw(uri));
     } else if (/^(https?:|ipfs:|ar:)/i.test(uri)) {
       metaJson = await fetchJson(uri);
     }
@@ -370,18 +498,26 @@ export async function inspectMint(rawMint: string): Promise<TokenScan> {
       const raw = Buffer.from(account.data[0] as string, "base64").toString(
         "utf8",
       );
-      extraHits.push(...hitsFromRawUtf8(raw));
+      extraAudio.push(...audioHitsFromRawUtf8(raw));
+      extraImage.push(...hitsFromImageRaw(raw));
     } catch {
       /* ignore */
     }
   }
 
-  const hits = findAudioHits(metaJson, extraHits).sort((a, b) => {
+  const audioHits = findAudioHits(metaJson, extraAudio).sort((a, b) => {
     const rank = (hit: AudioHit) =>
       hit.field === "account-data" ? 1 : hit.field.includes("sound") ? -1 : 0;
     return rank(a) - rank(b);
   });
-  const audio = hits[0] ?? null;
+  const audio = audioHits[0] ?? null;
+
+  let mediaHits = findImageHits(metaJson, extraImage);
+  if (mediaHits[0] && !mediaHits[0].src.startsWith("data:")) {
+    mediaHits = [await sniffRemote(mediaHits[0]), ...mediaHits.slice(1)];
+  }
+  const media = mediaHits[0] ?? null;
+  const image = media?.src ?? pickImage(metaJson);
 
   return {
     mint,
@@ -389,13 +525,15 @@ export async function inspectMint(rawMint: string): Promise<TokenScan> {
     program,
     name: pickName(metaJson, name),
     symbol: pickSymbol(metaJson, symbol),
-    image: pickImage(metaJson),
+    image,
     uri,
     uriKind: uriKind(uri),
     accountSpace: account.space ?? null,
     additionalMetadata,
     audio,
-    extraAudioCount: Math.max(0, hits.length - (audio ? 1 : 0)),
+    media,
+    extraAudioCount: Math.max(0, audioHits.length - (audio ? 1 : 0)),
     error: null,
+    totalScans: null,
   };
 }

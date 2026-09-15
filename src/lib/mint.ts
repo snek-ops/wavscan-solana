@@ -7,13 +7,13 @@ export const EXAMPLES = [
     hint: "on-chain wav",
   },
   {
-    label: "USDC",
-    mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    hint: "silent",
+    label: "Hypnotize",
+    mint: "AdKH1t84SAEW2YRuy1tEGt1Na4PtsSbyLyvfiLwUkA39",
+    hint: "gif",
   },
   {
-    label: "BONK",
-    mint: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+    label: "USDC",
+    mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     hint: "silent",
   },
 ] as const;

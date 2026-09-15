@@ -11,6 +11,7 @@
  */
 import { spawn } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -294,6 +295,17 @@ async function waitForReady(failure) {
 
 async function restart() {
   if (!(await stop())) return 1;
+
+  // Nitro does not emit PGLite's wasm/data next to the bundled module. Preview
+  // (no DATABASE_URL) needs them beside electric-sql__pglite.mjs or initdb throws.
+  const pgliteDest = join(ROOT, ".vercel/output/functions/__server.func/_libs");
+  const pgliteSrc = join(ROOT, "node_modules/@electric-sql/pglite/dist");
+  if (existsSync(pgliteDest) && existsSync(pgliteSrc)) {
+    for (const name of ["pglite.wasm", "pglite.data", "initdb.wasm"]) {
+      const from = join(pgliteSrc, name);
+      if (existsSync(from)) copyFileSync(from, join(pgliteDest, name));
+    }
+  }
 
   mkdirSync(dirname(LOG_FILE), { recursive: true });
   const log = openSync(LOG_FILE, "a");

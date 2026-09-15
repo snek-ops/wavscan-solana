@@ -1,10 +1,20 @@
-export type AudioStorage = "on-chain" | "off-chain";
+export type MediaStorage = "on-chain" | "off-chain";
 
 export type AudioHit = {
   field: string;
   src: string;
   mime: string;
-  storage: AudioStorage;
+  storage: MediaStorage;
+  bytes: number | null;
+};
+
+export type MediaHit = {
+  field: string;
+  src: string;
+  mime: string;
+  kind: "gif" | "image";
+  animated: boolean;
+  storage: MediaStorage;
   bytes: number | null;
 };
 
@@ -25,8 +35,10 @@ export type TokenScan = {
   accountSpace: number | null;
   additionalMetadata: ExtraField[];
   audio: AudioHit | null;
+  media: MediaHit | null;
   extraAudioCount: number;
   error: string | null;
+  totalScans: number | null;
 };
 
 export const EMPTY_SCAN: TokenScan = {
@@ -41,6 +53,8 @@ export const EMPTY_SCAN: TokenScan = {
   accountSpace: null,
   additionalMetadata: [],
   audio: null,
+  media: null,
   extraAudioCount: 0,
   error: null,
+  totalScans: null,
 };

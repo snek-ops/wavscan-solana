@@ -10,5 +10,14 @@ export const checkToken = createServerFn({ method: "POST" })
   .validator((data) => Input.parse(data))
   .handler(async ({ data }): Promise<TokenScan> => {
     const { inspectMint } = await import("./inspect.server");
-    return inspectMint(data.mint);
+    const scan = await inspectMint(data.mint);
+    try {
+      const { bumpScanCount, readScanCount } = await import("@/lib/stats.server");
+      const totalScans = scan.error?.includes("does not look like")
+        ? await readScanCount()
+        : await bumpScanCount();
+      return { ...scan, totalScans };
+    } catch {
+      return scan;
+    }
   });

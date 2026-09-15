@@ -1,5 +1,6 @@
 import { AudioLines, Copy, ExternalLink, LoaderCircle, Search } from "lucide-react";
 import { useEffect, useState } from "react";
+import { MediaPreview } from "@/components/media-preview";
 import { Player, SilentTrack } from "@/components/player";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,12 +9,18 @@ import { Separator } from "@/components/ui/separator";
 import { EXAMPLES, extractMint, shortMint } from "@/lib/mint";
 import { checkToken } from "@/lib/solana/check-token";
 import type { TokenScan } from "@/lib/solana/types";
+import { getScanCount } from "@/lib/stats";
 import { formatBytes } from "@/lib/wav";
 import { cn } from "@/lib/utils";
 
 const RECENTS_KEY = "wavscan:recents";
 
-type Recent = { mint: string; name: string | null; hasAudio: boolean };
+type Recent = {
+  mint: string;
+  name: string | null;
+  hasAudio: boolean;
+  hasGif: boolean;
+};
 
 function readRecents(): Recent[] {
   try {
@@ -34,15 +41,37 @@ function writeRecents(next: Recent[]) {
   }
 }
 
+function headline(scan: TokenScan): string {
+  const gif = scan.media?.kind === "gif";
+  const img = Boolean(scan.media);
+  const sound = Boolean(scan.audio);
+  if (sound && gif) return "Has sound and a GIF";
+  if (sound) return "Has sound";
+  if (gif) return "Has a GIF";
+  if (img) return "Has an image";
+  return "Silent";
+}
+
+function recentLabel(item: Recent): string {
+  if (item.hasAudio && item.hasGif) return "sound + gif";
+  if (item.hasAudio) return "sound";
+  if (item.hasGif) return "gif";
+  return "silent";
+}
+
 export function Checker() {
   const [value, setValue] = useState<string>(EXAMPLES[0].mint);
   const [status, setStatus] = useState<"idle" | "loading" | "done">("loading");
   const [scan, setScan] = useState<TokenScan | null>(null);
   const [copied, setCopied] = useState(false);
   const [recents, setRecents] = useState<Recent[]>([]);
+  const [scans, setScans] = useState<number | null>(null);
 
   useEffect(() => {
     setRecents(readRecents());
+    void getScanCount()
+      .then(setScans)
+      .catch(() => setScans(null));
     void runScan(EXAMPLES[0].mint);
   }, []);
 
@@ -55,11 +84,13 @@ export function Checker() {
       const result = await checkToken({ data: { mint } });
       setScan(result);
       setStatus("done");
+      if (typeof result.totalScans === "number") setScans(result.totalScans);
       if (result.exists && !result.error) {
         const entry: Recent = {
           mint: result.mint,
           name: result.name,
           hasAudio: Boolean(result.audio),
+          hasGif: result.media?.kind === "gif",
         };
         setRecents((prev) => {
           const next = [entry, ...prev.filter((r) => r.mint !== entry.mint)];
@@ -80,14 +111,17 @@ export function Checker() {
         accountSpace: null,
         additionalMetadata: [],
         audio: null,
+        media: null,
         extraAudioCount: 0,
         error: err instanceof Error ? err.message : "Scan failed.",
+        totalScans: scans,
       });
       setStatus("done");
     }
   }
 
   const hasAudio = Boolean(scan?.audio);
+  const hasGif = scan?.media?.kind === "gif";
   const failed = Boolean(scan?.error);
 
   return (
@@ -100,17 +134,17 @@ export function Checker() {
               WAVSCAN
             </span>
           </div>
-          <p className="hidden text-xs text-faint sm:block">
-            Solana · tx v1 · 4 KB budget
+          <p className="font-mono text-xs tabular-nums text-faint">
+            {scans != null ? `${scans.toLocaleString("en-US")} scans` : "—"}
           </p>
         </div>
         <div className="flex flex-col gap-3">
           <h1 className="font-display text-4xl font-semibold leading-tight tracking-tight text-fg text-balance sm:text-5xl">
-            Does this mint make a sound?
+            Does this mint carry media?
           </h1>
           <p className="max-w-xl text-pretty text-base leading-relaxed text-muted">
-            Paste a Solana token address. We read Token-2022 metadata and Metaplex
-            JSON for a real audio payload — on-chain bytes, not a tweet.
+            Paste a Solana token address. We read Token-2022 and Metaplex metadata
+            for on-chain audio, GIFs, and images — bytes on the mint, or a linked file.
           </p>
         </div>
       </header>
@@ -189,10 +223,10 @@ export function Checker() {
           <div className="flex flex-col gap-6">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex items-start gap-4">
-                <TokenMark src={scan.image} hasAudio={hasAudio} />
+                <TokenMark src={scan.image} active={hasAudio || Boolean(scan.media)} />
                 <div className="flex min-w-0 flex-col gap-1.5">
                   <p className="font-display text-2xl font-semibold tracking-tight text-fg">
-                    {hasAudio ? "Has sound" : "Silent"}
+                    {headline(scan)}
                   </p>
                   <p className="truncate text-sm text-muted">
                     {scan.name ?? "Unnamed mint"}
@@ -205,7 +239,10 @@ export function Checker() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={hasAudio ? "ok" : "default"}>
-                  {hasAudio ? "audio detected" : "no audio"}
+                  {hasAudio ? "audio" : "no audio"}
+                </Badge>
+                <Badge variant={hasGif ? "ok" : scan.media ? "accent" : "default"}>
+                  {hasGif ? "gif" : scan.media ? "image" : "no image"}
                 </Badge>
                 <Badge>
                   {scan.program === "token-2022"
@@ -218,9 +255,11 @@ export function Checker() {
               </div>
             </div>
 
+            {scan.media ? <MediaPreview media={scan.media} name={scan.name} /> : null}
+
             {scan.audio ? (
               <Player audio={scan.audio} name={scan.name} />
-            ) : (
+            ) : scan.media ? null : (
               <SilentTrack />
             )}
 
@@ -249,13 +288,17 @@ export function Checker() {
                 }
               />
               <Stat
-                label="v1 budget"
+                label="Image"
                 value={
-                  scan.audio?.bytes != null && scan.audio.bytes <= 4096
-                    ? "fits 4 KB"
-                    : scan.audio
-                      ? "over 4 KB"
-                      : "—"
+                  scan.media
+                    ? scan.media.kind === "gif"
+                      ? scan.media.storage === "on-chain"
+                        ? "on-chain gif"
+                        : "linked gif"
+                      : scan.media.storage === "on-chain"
+                        ? "on-chain"
+                        : "linked"
+                    : "missing"
                 }
               />
             </dl>
@@ -334,9 +377,7 @@ export function Checker() {
                       {shortMint(item.mint)}
                     </span>
                   </span>
-                  <span className="text-xs text-faint">
-                    {item.hasAudio ? "sound" : "silent"}
-                  </span>
+                  <span className="text-xs text-faint">{recentLabel(item)}</span>
                 </button>
               </li>
             ))}
@@ -346,14 +387,14 @@ export function Checker() {
 
       <footer className="text-xs leading-relaxed text-faint">
         Token-2022 tokenMetadata, metadata pointers, and Metaplex URIs. On-chain
-        means a data URI living on the mint — the 4 KB v1 transaction budget is
-        what made a real WAV possible.
+        means a data URI living on the mint. Linked GIFs are sniffed for GIF87a /
+        GIF89a magic so a .png name cannot fake it.
       </footer>
     </div>
   );
 }
 
-function TokenMark({ src, hasAudio }: { src: string | null; hasAudio: boolean }) {
+function TokenMark({ src, active }: { src: string | null; active: boolean }) {
   if (src) {
     return (
       <img
@@ -367,7 +408,7 @@ function TokenMark({ src, hasAudio }: { src: string | null; hasAudio: boolean })
     <div
       className={cn(
         "flex size-14 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2",
-        hasAudio ? "text-accent" : "text-faint",
+        active ? "text-accent" : "text-faint",
       )}
     >
       <AudioLines className="size-5" strokeWidth={1.6} />
