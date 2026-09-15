@@ -23,6 +23,8 @@ export type ExtraField = {
   value: string;
 };
 
+export type FileGrade = "G0" | "G1" | "G2" | "G3" | "G4" | "G5";
+
 export type TokenScan = {
   mint: string;
   exists: boolean;
@@ -39,6 +41,11 @@ export type TokenScan = {
   extraAudioCount: number;
   error: string | null;
   totalScans: number | null;
+  grade: FileGrade | null;
+  gradeLabel: string | null;
+  gradeReasons: string[];
+  claimMismatch: boolean;
+  packedMint: string | null;
 };
 
 export const EMPTY_SCAN: TokenScan = {
@@ -57,4 +64,9 @@ export const EMPTY_SCAN: TokenScan = {
   extraAudioCount: 0,
   error: null,
   totalScans: null,
+  grade: null,
+  gradeLabel: null,
+  gradeReasons: [],
+  claimMismatch: false,
+  packedMint: null,
 };
