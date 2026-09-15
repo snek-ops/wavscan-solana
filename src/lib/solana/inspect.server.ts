@@ -929,9 +929,11 @@ function attachGrade(
 ): TokenScan {
   const onMintFile =
     hasOnMintFile(scan.uri, scan.additionalMetadata) ||
-    scan.media?.storage === "on-chain" ||
-    scan.audio?.storage === "on-chain" ||
-    scan.gallery.some((hit) => hit.storage === "on-chain");
+    (scan.media?.storage === "on-chain" && !scan.media.field.startsWith("packed.")) ||
+    (scan.audio?.storage === "on-chain" && !scan.audio.field.startsWith("packed.")) ||
+    scan.gallery.some(
+      (hit) => hit.storage === "on-chain" && !hit.field.startsWith("packed."),
+    );
   const grade = decidePrimaryGrade({
     exists: scan.exists,
     uri: scan.uri,
@@ -1292,14 +1294,31 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
         companion.gallery.some((hit) => hit.storage === "on-chain");
       if (packedHasFile) {
         packedMint = derivedPacked;
+        const packedHits: MediaHit[] = [];
         if (companion.media) {
           media = {
             ...companion.media,
             field: `packed.${companion.media.field}`,
           };
+          packedHits.push(media);
+        }
+        for (const hit of companion.gallery) {
+          if (hit.storage !== "on-chain") continue;
+          packedHits.push({ ...hit, field: `packed.${hit.field}` });
         }
         if (!audio && companion.audio) audio = companion.audio;
-        image = image ?? companion.image;
+        image = media?.src ?? companion.image ?? image;
+        const seenPacked = new Set<string>();
+        const merged: MediaHit[] = [];
+        for (const hit of [...packedHits, ...gallery]) {
+          const key = `${hit.storage}|${hit.src.slice(0, 96)}`;
+          if (seenPacked.has(key)) continue;
+          seenPacked.add(key);
+          merged.push(hit);
+          if (merged.length >= 12) break;
+        }
+        gallery.length = 0;
+        gallery.push(...merged);
       }
     }
   }

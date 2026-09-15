@@ -433,9 +433,11 @@ export function Checker() {
                     Token image
                   </p>
                   <p className="text-sm leading-relaxed text-muted">
-                    {galleryItems.some((hit) => hit.storage === "on-chain")
-                      ? "On-chain file packed in this mint."
-                      : "Off-chain file this mint’s URI points at. Not inscribed."}
+                    {packedMedia
+                      ? "On-chain file packed on a linked mint."
+                      : galleryItems.some((hit) => hit.storage === "on-chain")
+                        ? "On-chain file packed in this mint."
+                        : "Off-chain file this mint’s URI points at. Not inscribed."}
                   </p>
                 </div>
                 <MediaGallery items={galleryItems} name={scan.name} />

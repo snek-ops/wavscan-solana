@@ -32,6 +32,10 @@ test("G4 requires a real data: media blob", () => {
     hasOnMintFile(null, [{ key: "image", value: "chunked:image/jpeg+gzip;n=7" }]),
     true,
   );
+  assert.equal(
+    hasOnMintFile(null, [{ key: "animation.0", value: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" }]),
+    true,
+  );
 });
 
 test("decision order", () => {

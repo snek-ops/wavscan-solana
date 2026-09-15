@@ -264,6 +264,11 @@ export function hasOnMintFile(
   extra: Array<{ key: string; value: string }>,
 ): boolean {
   const values = [uri ?? "", ...extra.map((f) => f.value)];
+  for (const field of extra) {
+    if (/^(animation|anim|gif)\.\d+$/i.test(field.key) && field.value.length > 24) {
+      return true;
+    }
+  }
   for (const raw of values) {
     const v = raw.trim();
     if (/^chunked:(image|audio|video)\//i.test(v)) return true;

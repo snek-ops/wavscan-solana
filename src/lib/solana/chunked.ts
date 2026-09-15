@@ -143,6 +143,95 @@ function matchesMime(mime: string, bytes: Buffer): boolean {
   return false;
 }
 
+const NUMBERED_PREFIXES = new Set(["animation", "anim", "gif", "image", "frame"]);
+
+function sniffPackedBytes(bytes: Buffer): { mime: string; kind: MediaHit["kind"] } | null {
+  let buf = bytes;
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    try {
+      buf = gunzipSync(buf);
+    } catch {
+      return null;
+    }
+  }
+  if (buf.length < 8) return null;
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+    return { mime: "image/gif", kind: "gif" };
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { mime: "image/jpeg", kind: "image" };
+  }
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e) {
+    const animated = buf.includes(Buffer.from("acTL"));
+    return { mime: "image/png", kind: animated ? "gif" : "image" };
+  }
+  if (buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP") {
+    const animated = buf.includes(Buffer.from("ANIM"));
+    return { mime: "image/webp", kind: animated ? "gif" : "image" };
+  }
+  return null;
+}
+
+function assembleParts(
+  byKey: Map<string, string>,
+  prefix: string,
+): Buffer | null {
+  const lower = new Map<string, string>();
+  for (const [key, value] of byKey) lower.set(key.toLowerCase(), value);
+  const parts: string[] = [];
+  for (let i = 0; i < 32; i += 1) {
+    const value = lower.get(`${prefix}.${i}`);
+    if (value == null || value.length === 0) {
+      if (i === 0) return null;
+      break;
+    }
+    parts.push(value);
+  }
+  if (parts.length === 0) return null;
+  try {
+    const bytes = Buffer.from(padBase64(parts.join("")), "base64");
+    if (bytes.length < 8 || bytes.length > 1_500_000) return null;
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function decodeNumberedPacks(
+  extra: ExtraField[],
+  byKey: Map<string, string>,
+  skip: Set<string>,
+): MediaHit[] {
+  const images: MediaHit[] = [];
+  const prefixes = new Set<string>();
+  for (const field of extra) {
+    const part = field.key.toLowerCase().match(/^([a-z]+)\.(\d+)$/);
+    if (!part) continue;
+    const prefix = part[1]!;
+    if (!NUMBERED_PREFIXES.has(prefix) || skip.has(prefix)) continue;
+    prefixes.add(prefix);
+  }
+  for (const prefix of prefixes) {
+    if (skip.has(prefix)) continue;
+    const bytes = assembleParts(byKey, prefix);
+    if (!bytes) continue;
+    const sniff = sniffPackedBytes(bytes);
+    if (!sniff) continue;
+    skip.add(prefix);
+    const kind = sniff.kind;
+    images.push({
+      field: `additionalMetadata.${prefix}`,
+      src: toDataUri(sniff.mime, bytes),
+      mime: sniff.mime,
+      kind,
+      animated: kind === "gif",
+      storage: "on-chain",
+      bytes: bytes.length,
+    });
+  }
+  return images;
+}
+
 export function decodeChunkedPacks(extra: ExtraField[]): {
   images: MediaHit[];
   audios: AudioHit[];
@@ -151,6 +240,7 @@ export function decodeChunkedPacks(extra: ExtraField[]): {
   const audios: AudioHit[] = [];
   const byKey = new Map<string, string>();
   for (const field of extra) byKey.set(field.key, field.value);
+  const decoded = new Set<string>();
 
   for (const field of extra) {
     const manifest = parseChunkedManifest(field.key, field.value);
@@ -178,6 +268,7 @@ export function decodeChunkedPacks(extra: ExtraField[]): {
     if (bytes.length < 8 || bytes.length > 1_500_000) continue;
     if (!matchesMime(manifest.mime, bytes)) continue;
     const src = toDataUri(manifest.mime, bytes);
+    decoded.add(manifest.prefix.toLowerCase());
     if (manifest.mime.startsWith("audio/")) {
       audios.push({
         field: `additionalMetadata.${manifest.prefix}`,
@@ -201,5 +292,7 @@ export function decodeChunkedPacks(extra: ExtraField[]): {
       });
     }
   }
+  images.push(...decodeNumberedPacks(extra, byKey, decoded));
   return { images, audios };
 }
+

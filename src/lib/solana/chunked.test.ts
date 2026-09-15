@@ -81,3 +81,31 @@ test("decode gzip jpeg slices into one on-mint image", () => {
   const body = image.src.split(",")[1]!;
   assert.deepEqual(Buffer.from(body, "base64"), MINI_JPEG);
 });
+
+const MINI_GIF = Buffer.from(
+  "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+  "base64",
+);
+
+test("assemble animation.N gif slices without a chunked manifest", () => {
+  const packed = MINI_GIF.toString("base64");
+  const mid = Math.ceil(packed.length / 2);
+  const fields = extraPairs([
+    ["image", "data:image/webp;base64,AAAA"],
+    ["animation.0", packed.slice(0, mid)],
+    ["animation.1", packed.slice(mid)],
+  ]);
+  const hits = decodeChunkedPacks(fields);
+  assert.equal(hits.images.length, 1);
+  const gif = hits.images[0]!;
+  assert.equal(gif.mime, "image/gif");
+  assert.equal(gif.kind, "gif");
+  assert.equal(gif.animated, true);
+  assert.equal(gif.storage, "on-chain");
+  assert.equal(gif.bytes, MINI_GIF.length);
+  assert.deepEqual(
+    extraForDisplay(fields).map((f) => f.key),
+    ["image"],
+  );
+});
+
