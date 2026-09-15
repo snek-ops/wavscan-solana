@@ -37,6 +37,11 @@ import {
 } from "./grade";
 import { findAnyScribeForMint } from "./anyscribe.server";
 import { isAnyScribeProof, type AnyScribeProof } from "./anyscribe";
+import {
+  decodeChunkedPacks,
+  extraForDisplay,
+  extraPairs,
+} from "./chunked";
 import { rpc, rpcErrorMessage } from "./rpc.server";
 import {
   configFromRpcMessage,
@@ -246,18 +251,18 @@ async function fetchJson(uri: string): Promise<unknown | null> {
   return firstOk(attempts);
 }
 
-function extraFromPairs(pairs: unknown): ExtraField[] {
-  if (!Array.isArray(pairs)) return [];
-  const out: ExtraField[] = [];
-  for (const pair of pairs) {
-    if (!Array.isArray(pair) || pair.length < 2) continue;
-    const key = String(pair[0] ?? "");
-    let value = String(pair[1] ?? "");
-    if (value.length > 240) value = `${value.slice(0, 237)}…`;
-    out.push({ key, value });
-    if (out.length >= 24) break;
-  }
-  return out;
+function ingestPackedExtra(
+  pairs: unknown,
+  extraAudio: AudioHit[],
+  extraImage: MediaHit[],
+): ExtraField[] {
+  const raw = extraPairs(pairs);
+  const chunked = decodeChunkedPacks(raw);
+  extraAudio.push(...chunked.audios);
+  extraImage.push(...chunked.images);
+  extraAudio.push(...audioHitsFromPairs(pairs));
+  extraImage.push(...imageHitsFromPairs(pairs));
+  return extraForDisplay(raw);
 }
 
 function audioHitsFromPairs(pairs: unknown): AudioHit[] {
@@ -706,7 +711,7 @@ function tokenMetaFromAccount(account: RpcAccount): {
         name: typeof ext.state.name === "string" ? ext.state.name : null,
         symbol: typeof ext.state.symbol === "string" ? ext.state.symbol : null,
         uri: typeof ext.state.uri === "string" ? ext.state.uri : null,
-        extra: extraFromPairs(ext.state.additionalMetadata),
+        extra: extraPairs(ext.state.additionalMetadata),
       };
     }
   }
@@ -852,7 +857,11 @@ async function peekLinkedMint(
     ) {
       return null;
     }
-    const hasFile = hasOnMintFile(meta.uri, meta.extra);
+    const packed = decodeChunkedPacks(meta.extra);
+    const hasFile =
+      hasOnMintFile(meta.uri, meta.extra) ||
+      packed.images.length > 0 ||
+      packed.audios.length > 0;
     const role = roleForLink(classified.kind, hasFile, packedMint, address);
     if (!role) return null;
     if (role === "token" && !explicit.has(address) && packedMint !== address) {
@@ -862,6 +871,15 @@ async function peekLinkedMint(
     const contents = loadContents
       ? await contentsFromUri(meta.uri)
       : { media: null, audio: null, image: null };
+    if (loadContents) {
+      if (!contents.media && packed.images[0]) {
+        contents.media = packed.images[0];
+        contents.image = packed.images[0].src;
+      }
+      if (!contents.audio && packed.audios[0]) {
+        contents.audio = packed.audios[0];
+      }
+    }
     return {
       address,
       role,
@@ -909,7 +927,11 @@ function attachGrade(
   claimSource = "",
   anyscribe: AnyScribeProof | null = null,
 ): TokenScan {
-  const onMintFile = hasOnMintFile(scan.uri, scan.additionalMetadata);
+  const onMintFile =
+    hasOnMintFile(scan.uri, scan.additionalMetadata) ||
+    scan.media?.storage === "on-chain" ||
+    scan.audio?.storage === "on-chain" ||
+    scan.gallery.some((hit) => hit.storage === "on-chain");
   const grade = decidePrimaryGrade({
     exists: scan.exists,
     uri: scan.uri,
@@ -1086,9 +1108,11 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
         ) {
           updateAuthority = ext.state.updateAuthority;
         }
-        additionalMetadata = extraFromPairs(ext.state.additionalMetadata);
-        extraAudio.push(...audioHitsFromPairs(ext.state.additionalMetadata));
-        extraImage.push(...imageHitsFromPairs(ext.state.additionalMetadata));
+        additionalMetadata = ingestPackedExtra(
+          ext.state.additionalMetadata,
+          extraAudio,
+          extraImage,
+        );
       }
     }
     if (!uri) {
@@ -1120,9 +1144,11 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
                   symbol =
                     typeof e.state.symbol === "string" ? e.state.symbol : symbol;
                   uri = typeof e.state.uri === "string" ? e.state.uri : uri;
-                  additionalMetadata = extraFromPairs(e.state.additionalMetadata);
-                  extraAudio.push(...audioHitsFromPairs(e.state.additionalMetadata));
-                  extraImage.push(...imageHitsFromPairs(e.state.additionalMetadata));
+                  additionalMetadata = ingestPackedExtra(
+                    e.state.additionalMetadata,
+                    extraAudio,
+                    extraImage,
+                  );
                 }
               }
             } catch {
@@ -1184,7 +1210,7 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
   let audio = audioHits[0] ?? null;
 
   let mediaHits = findImageHits(metaJson, extraImage);
-  const onMintFile = hasOnMintFile(uri, additionalMetadata);
+  const onMintFile = hasOnMintFile(uri, additionalMetadata) || extraImage.some((hit) => hit.storage === "on-chain");
   const sniffPromise =
     mediaHits[0] && !mediaHits[0].src.startsWith("data:")
       ? sniffRemote(mediaHits[0])
@@ -1198,7 +1224,6 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
   const huntTxVersion =
     hop === 0 && (classified.decimals == null || classified.decimals === 0);
   const huntAnyScribe = hop === 0;
-  const pointed = pointerMints(additionalMetadata, metaJson, mint);
   const [bundle, anyscribe] = await Promise.all([
     withTimeout(
       Promise.all([
@@ -1237,19 +1262,34 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
   if (sniffed) mediaHits = [sniffed, ...mediaHits.slice(1)];
   let media = mediaHits[0] ?? null;
   let image = media?.src ?? pickImage(metaJson);
+  const gallery: MediaHit[] = [];
+  const seenMedia = new Set<string>();
+  const orderedHits = [
+    ...mediaHits.filter((hit) => hit.storage === "on-chain"),
+    ...mediaHits.filter((hit) => hit.storage !== "on-chain"),
+  ];
+  for (const hit of orderedHits) {
+    const key = `${hit.storage}|${hit.src.slice(0, 96)}`;
+    if (seenMedia.has(key)) continue;
+    seenMedia.add(key);
+    gallery.push(hit);
+    if (gallery.length >= 12) break;
+  }
 
   let packedMint: string | null = null;
   let packedHasFile = false;
-  if (onMintFile) {
-    packedMint = pointed[0] ?? null;
-  } else if (derivedPacked) {
+  if (!onMintFile && derivedPacked) {
     const companion = await withTimeout(
       inspectMint(derivedPacked, hop + 1),
       4_000,
       null as TokenScan | null,
     );
     if (companion) {
-      packedHasFile = hasOnMintFile(companion.uri, companion.additionalMetadata);
+      packedHasFile =
+        hasOnMintFile(companion.uri, companion.additionalMetadata) ||
+        companion.media?.storage === "on-chain" ||
+        companion.audio?.storage === "on-chain" ||
+        companion.gallery.some((hit) => hit.storage === "on-chain");
       if (packedHasFile) {
         packedMint = derivedPacked;
         if (companion.media) {
@@ -1312,6 +1352,7 @@ export async function inspectMint(rawMint: string, hop = 0): Promise<TokenScan> 
     media,
     game,
     extraAudioCount: Math.max(0, audioHits.length - (audio ? 1 : 0)),
+    gallery,
     error: null,
     totalScans: null,
     grade: null,

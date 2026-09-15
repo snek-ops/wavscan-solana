@@ -1,4 +1,4 @@
-import { Copy, ExternalLink } from "lucide-react";
+import { Copy, ExternalLink, Search } from "lucide-react";
 import { useState } from "react";
 import { MediaPreview } from "@/components/media-preview";
 import { Player } from "@/components/player";
@@ -37,7 +37,13 @@ function CopyMint({ address }: { address: string }) {
   );
 }
 
-export function LinkedOnchain({ links }: { links: LinkedMint[] }) {
+export function LinkedOnchain({
+  links,
+  onScan,
+}: {
+  links: LinkedMint[];
+  onScan?: (mint: string) => void;
+}) {
   if (links.length === 0) return null;
 
   const hasSidecar = links.some(
@@ -53,12 +59,13 @@ export function LinkedOnchain({ links }: { links: LinkedMint[] }) {
         <p className="text-sm leading-relaxed text-muted">
           {hasSidecar
             ? "Files inscribed on a linked NFT, shown here so you do not have to scan again. The grade above is this token. Copy the NFT address to verify on Solscan."
-            : "A mint this account points at. Copy the address to look it up — scanning it from here would start a new trail."}
+            : "Tradeable token this NFT points at. Scan to go back — this is the contract, not another sidecar."}
         </p>
       </div>
       <ul className="flex flex-col gap-4">
         {links.map((link) => {
           const meta = LINK_ROLE_META[link.role];
+          const backtrack = link.role === "token" && onScan;
           return (
             <li
               key={link.address}
@@ -92,7 +99,19 @@ export function LinkedOnchain({ links }: { links: LinkedMint[] }) {
               {link.audio ? <Player audio={link.audio} name={link.name} /> : null}
               <p className="break-all font-mono text-xs text-faint">{link.address}</p>
               <div className="flex flex-wrap items-center gap-2">
-                <CopyMint address={link.address} />
+                {backtrack ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => onScan(link.address)}
+                  >
+                    <Search />
+                    Scan
+                  </Button>
+                ) : (
+                  <CopyMint address={link.address} />
+                )}
                 <Button variant="secondary" size="sm" asChild>
                   <a
                     href={`https://solscan.io/token/${link.address}`}

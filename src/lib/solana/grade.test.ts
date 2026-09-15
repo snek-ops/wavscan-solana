@@ -28,6 +28,10 @@ test("G4 requires a real data: media blob", () => {
     false,
   );
   assert.equal(hasOnMintFile("https://ipfs.io/foo", []), false);
+  assert.equal(
+    hasOnMintFile(null, [{ key: "image", value: "chunked:image/jpeg+gzip;n=7" }]),
+    true,
+  );
 });
 
 test("decision order", () => {

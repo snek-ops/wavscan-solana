@@ -5,7 +5,7 @@ import { GradeCard } from "@/components/grade-card";
 import { GradeLegend } from "@/components/grade-legend";
 import { gradeTextClass } from "@/components/grade-style";
 import { LinkedOnchain } from "@/components/linked-onchain";
-import { MediaPreview } from "@/components/media-preview";
+import { MediaGallery } from "@/components/media-gallery";
 import { Player, SilentTrack } from "@/components/player";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -194,7 +194,12 @@ export function Checker() {
   }
 
   const hasAudio = Boolean(scan?.audio);
-  const hasGif = scan?.media?.kind === "gif";
+  const galleryItems = scan?.gallery?.length
+    ? scan.gallery
+    : scan?.media
+      ? [scan.media]
+      : [];
+  const hasGif = galleryItems.some((hit) => hit.kind === "gif");
   const hasGame = Boolean(scan?.game);
   const failed = Boolean(scan?.error);
   const packedMedia = Boolean(scan?.media?.field.startsWith("packed."));
@@ -412,17 +417,34 @@ export function Checker() {
               </div>
             </div>
 
-            <LinkedOnchain links={scan.links} />
-
             <GradeCard scan={scan} />
+
+            <LinkedOnchain
+              links={scan.links}
+              onScan={(mint) => void runScan(mint)}
+            />
 
             {scan.game ? <GamePlayer game={scan.game} /> : null}
 
-            {scan.media ? <MediaPreview media={scan.media} name={scan.name} /> : null}
+            {galleryItems.length > 0 ? (
+              <div className="flex flex-col gap-4 rounded-md border border-border bg-surface-2 p-4">
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-faint">
+                    Token image
+                  </p>
+                  <p className="text-sm leading-relaxed text-muted">
+                    {galleryItems.some((hit) => hit.storage === "on-chain")
+                      ? "On-chain file packed in this mint."
+                      : "Off-chain file this mint’s URI points at. Not inscribed."}
+                  </p>
+                </div>
+                <MediaGallery items={galleryItems} name={scan.name} />
+              </div>
+            ) : null}
 
             {scan.audio ? (
               <Player audio={scan.audio} name={scan.name} />
-            ) : scan.media || scan.game ? null : (
+            ) : galleryItems.length || scan.game ? null : (
               <SilentTrack />
             )}
 

@@ -137,6 +137,7 @@ export type TokenScan = {
   media: MediaHit | null;
   game: GameHit | null;
   extraAudioCount: number;
+  gallery: MediaHit[];
   error: string | null;
   totalScans: number | null;
   grade: Grade | null;
@@ -174,6 +175,7 @@ export const EMPTY_SCAN: TokenScan = {
   media: null,
   game: null,
   extraAudioCount: 0,
+  gallery: [],
   error: null,
   totalScans: null,
   grade: null,

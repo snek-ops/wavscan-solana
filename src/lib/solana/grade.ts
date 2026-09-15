@@ -266,6 +266,7 @@ export function hasOnMintFile(
   const values = [uri ?? "", ...extra.map((f) => f.value)];
   for (const raw of values) {
     const v = raw.trim();
+    if (/^chunked:(image|audio|video)\//i.test(v)) return true;
     if (!v.startsWith("data:")) continue;
     if (isDataMedia(v)) return true;
     if (v.toLowerCase().startsWith("data:application/json") || v.startsWith("data:text/")) {

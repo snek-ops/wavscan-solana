@@ -9,7 +9,7 @@ Live rule: **v1 is a transaction format. Inscribed means media bytes in live acc
 | Grade | Label | Meaning |
 | --- | --- | --- |
 | **G5** | fully on-chain file | Bytes live in a program-owned storage account (AnyScribe today) or chunked inscription writes. Not a 4 KB v1 pack. The HTTP metadata/content URL is a **gateway onto those slices**, not the store. |
-| **G4** | on-mint file | `data:` URI (or nested `data:` media) lives in this mint's TokenMetadata TLV. Rent pays for it. Typical size: a couple of KB. |
+| **G4** | on-mint file | `data:` URI, nested `data:` media, or `chunked:image/…+gzip` slices in additionalMetadata. Rent pays for it. Typical size: a couple of KB to tens of KB. |
 | **G3** | inscription on linked mint | This CA's URI is HTTP/IPFS. A companion mint holds the packed `data:` file. |
 | **G2** | ledger-packed artifact | Bytes sit in a memo / instruction of a confirmed tx, not in the mint. |
 | **G1** | on-chain metadata, off-chain file | Name/symbol/URI on-chain. File is HTTP, IPFS, or Arweave. Honest default for pump coins. |
@@ -83,6 +83,7 @@ npm run typecheck
 ```
 src/lib/solana/inspect.server.ts   RPC + metadata unpack + readTransaction()
 src/lib/solana/grade.ts            G0–G5 classifier
+src/lib/solana/chunked.ts          chunked:image/…+gzip extra slices
 src/lib/solana/v1-tx.ts            0x81 wire parse, transactionConfig
 src/lib/solana/anyscribe.ts        ANYSCRIB header + sha256-chain-v1
 src/lib/solana/anyscribe.server.ts RPC dataSlice verification
@@ -90,6 +91,7 @@ src/lib/solana/detect-audio.ts
 src/lib/solana/detect-image.ts
 src/lib/solana/detect-game.ts
 src/components/checker.tsx         UI
+src/components/media-gallery.tsx   Token image gallery
 src/components/grade-legend.tsx    Grades / Don't trust, verify tabs
 ```
 
@@ -99,7 +101,7 @@ src/components/grade-legend.tsx    Grades / Don't trust, verify tabs
 | --- | --- |
 | bruh pump (`6tRot…`) | G1 — HTTP/IPFS file on the token. Sidecar NFT `Bepk57…` holds the on-mint SVG + WAV (shown inline, not a rescan) |
 | bruh NFT (`Bepk57…`) | G4 — `data:application/json` with SVG + WAV inside |
-| DVD4q | G4 — on-mint JPEG |
+| ALLINU companion (`Gj875…`) | G4 — `chunked:image/jpeg+gzip` slices on the mint, shown in the gallery |
 | HUHCAT pump (`A9AHY…`) | G3 — file on the packed companion |
 | onepage.surf / ONEPAGE tx | G2 cart in a memo |
 | AnyScribe mint whose storage account verifies | G5 — program account, not the HTTP gateway |
